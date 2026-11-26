@@ -12,7 +12,7 @@ namespace MountainTide
         {
             Plate(g,22,19,243,67,Dark,Rim,10);
             Sprite(g,Sea?art.Tools[6]:art.Plants[0,2],30,25,43,52);
-            TextAt(g,Sea?"海上避难所":"云岫农场",24,cream,83,23,170,34,true);
+            TextAt(g,Sea?"海上避难所":InField?"云岫农场":"山景农舍",24,cream,83,23,170,34,true);
             TextAt(g,(Sea?"2126 · 百年后":"2026 · 现代")+"    第 "+state.Day+" 天",13,Col("d4d4ad"),84,56,176,22);
             Plate(g,934,20,127,41,Dark,Rim,14);Sprite(g,art.Tools[5],945,27,27,27);
             TextAt(g,"现钱 "+state.Cash,16,cream,979,20,84,41,true);
@@ -49,7 +49,7 @@ namespace MountainTide
                 case "sale":name=Sea?"码头交货":"粮站过秤";intro="可以分批卖，余下的收成会留在背包里。";break;
 
 
-                case "home":name="山间农舍";intro="窗外就是你的地。睡一觉，作物也会长大。";break;
+                case "bed":name="床边休息";intro="窗外就是你的地。睡一觉，作物也会长大。";break;
                 case "help":name="田间小记";intro="翻地时，我捡到一只旧怀表。拧动表冠，山谷里竟有了潮声。";break;
             }
             TextAt(g,name,26,ink,382,156,449,40,true);TextAt(g,intro,15,Col("62705b"),384,204,520,30);
@@ -77,7 +77,7 @@ namespace MountainTide
                 ModalButton(g,644,345,78,"全部","all",true,false);ModalButton(g,737,345,78,"一份","one",true,false);
                 TextAt(g,"本次可得   "+(price*saleQuantity)+(Sea?" 星元":" 现钱"),21,ink,385,421,480,43,true,true);
                 ModalButton(g,714,493,183,"确认出售","confirmSale");
-            }else if(panel=="home"){
+            }else if(panel=="bed"){
                 Sprite(g,art.FarmerFrames[0,0],415,266,74,103);TextAt(g,"回家歇歇脚",23,ink,534,267,300,45,true);
                 TextAt(g,"休息一天会让农场时间前进 90 秒。",16,ink,534,318,370,39);
                 TextAt(g,"作物平时也会生长，关掉游戏后照常计时。",15,Col("64715d"),390,414,500,42,false,true);
@@ -92,12 +92,15 @@ namespace MountainTide
         {
             if(a=="close"){panel="";CloseDrawer();return;}
             if(a=="watch"){Travel();return;}
+            if((a=="leaveHouse"||a=="bed")&&scene==Scene.House){
+                CloseDrawer();WalkTo(a=="bed"?BesideBed:InsideDoor,a);return;
+            }
             if(DrawerAction(a))return;
             if(a=="help"){StopWalking();CloseDrawer();panel=a;return;}
             if(a=="home"||a=="grain"||a=="harbor"||a=="tech"||a=="supply"){
-                if(Sea!=(a=="tech"||a=="harbor"))return;
+                if(scene==Scene.House||Sea!=(a=="tech"||a=="harbor"))return;
                 PointF door=Sea?(a=="tech"?new PointF(1016,347):new PointF(342,344)):
-                    a=="home"?new PointF(323,323):a=="supply"?new PointF(632,320):new PointF(1019,336);
+                    a=="home"?HomeEntry:a=="supply"?SeedEntry:GrainEntry;
                 CloseDrawer();tool="hand";WalkTo(door,a);return;
             }
             if(a.StartsWith("sale")&&(panel=="grain"||panel=="harbor")){
@@ -116,7 +119,7 @@ namespace MountainTide
             if(a.StartsWith("equip")&&Sea&&panel=="tech"){
                 int id=int.Parse(a.Substring(5));if(state.Equip(id)){Store();Tell("已购入"+FarmState.Machines[id]+"。");}return;
             }
-            if(a=="sleep"&&!Sea&&panel=="home"){state.TimeBonus+=90;state.Automate(state.Now);Store();panel="";Tell("第 "+state.Day+" 天清晨，去看看田里的收成吧。");}
+            if(a=="sleep"&&scene==Scene.House&&panel=="bed"){state.TimeBonus+=90;state.Automate(state.Now);Store();panel="";Tell("第 "+state.Day+" 天清晨，去看看田里的收成吧。");}
         }
         void Tend(int i)
         {

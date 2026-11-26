@@ -56,7 +56,7 @@ namespace MountainTide
                     else {clearCrop=-1;Tell("这格作物已变化，请重新选择。");}return true;
             }
             if(a.StartsWith("plot")){
-                if(Sea)return true;
+                if(!InField)return true;
                 int i=int.Parse(a.Substring(4));Plot p=state.Plots[i];
                 if(drawer==""&&tool=="shovel"){UseShovel(i);return true;}
                 if(drawer==""&&tool=="seed"){
@@ -69,7 +69,7 @@ namespace MountainTide
                 SelectCell(i);PointF b=Bed(i);WalkTo(new PointF(b.X+(player.X<b.X?-52:52),b.Y+16),"");return true;
             }
             if(!a.StartsWith("use-"))return false;
-            if(Sea)return true;
+            if(!InField)return true;
             string work=a.Substring(4);
             if(work.StartsWith("seed")){
                 selectedSeed=int.Parse(work.Substring(4));if(state.Seeds[selectedSeed]==0)return true;
@@ -89,10 +89,11 @@ namespace MountainTide
             if(heldCrop!=""&&heldCrop==hover)hint="松开采摘 · 移开鼠标可取消";
             else if(T<msgEnd)hint=message;
             else if(Sea)hint="码头收作物，工坊卖设备";
-            else if(tool=="shovel")hint="铲子 · 点草地开垦 · 右键放下";
+            else if(scene==Scene.House)hint="点床休息 · 点红门回到农场";
+            else if(tool=="shovel")hint="铲子 · "+FarmState.CellCount+" 格草地可选，剩余 "+(FarmState.LandLimit-state.OpenCount)+" 个开垦名额 · 右键放下";
             else if(tool=="seed")hint=Crop.All[selectedSeed].Name+"种子 × "+state.Seeds[selectedSeed]+" · 点空田播种 · 右键放下";
             else if(tool=="feed")hint="已选化肥 · 点生长中的作物施肥";
-            else if(state.OpenCount==0)hint="拿起下方的铲子，点一处草地开垦第一块田";
+            else if(state.OpenCount==0)hint="从 "+FarmState.CellCount+" 格草地中自选 "+FarmState.LandLimit+" 格 · 拿起铲子，点地开垦";
             else if(hover.StartsWith("plot")){
                 int i=int.Parse(hover.Substring(4));Plot p=state.Plots[i];
                 hint=!p.Opened?"点击草地选择位置":p.CropId<0?"空田 · 点击选种":Crop.All[p.CropId].Name+(state.Left(i,state.Now)==0?"成熟了 · 点击采收":" · "+state.Left(i,state.Now)+" 秒后成熟");
@@ -101,9 +102,9 @@ namespace MountainTide
                 float w=Math.Min(680,g.MeasureString(hint,F(15,false)).Width+34);
                 Plate(g,(W-w)/2,593,w,30,Dark,Rim,14);TextAt(g,hint,15,cream,(W-w)/2,593,w,30,false,true);
             }
-            string[] acts=Sea?new[]{"stock","watch"}:new[]{"use-shovel","seeds","feedtool","stock","watch"};
-            string[] labels=Sea?new[]{"背包","回到农场"}:new[]{"铲子","种袋","化肥","背包","时空怀表"};
-            int[] icons=Sea?new[]{3,4}:new[]{-1,1,2,3,4};
+            string[] acts=InField?new[]{"use-shovel","seeds","feedtool","stock","watch"}:new[]{"stock","watch"};
+            string[] labels=InField?new[]{"铲子","种袋","化肥","背包","时空怀表"}:new[]{"背包",Sea?"回到农场":"时空怀表"};
+            int[] icons=InField?new[]{-1,1,2,3,4}:new[]{3,4};
             int width=acts.Length*78+16,start=(W-width)/2;
             Plate(g,start+2,635,width,72,Col("785839"),Col("795b3b"),10);
             Plate(g,start,630,width,72,Col("8d6944"),Col("4e3b2b"),10);
@@ -132,7 +133,7 @@ namespace MountainTide
             Plate(g,25,top+5,1230,138,Col("735136"),Col("4f3929"),12);
             Plate(g,22,top,1236,139,Col("b6834d"),Col("654329"),12);
             Plate(g,32,top+29,1216,102,Col("fff3d6"),Col("906b40"),9);
-            string[] tabs=Sea?new[]{"stock","machines","seeds"}:new[]{"tools","seeds","stock","machines"};
+            string[] tabs=InField?new[]{"tools","seeds","stock","machines"}:new[]{"stock","machines","seeds"};
             int x=39;
             foreach(string tab in tabs){
                 bool on=tab==drawer;string label=tab=="tools"?"农具":tab=="seeds"?"种子":tab=="stock"?"农作物":"设备";
@@ -142,7 +143,7 @@ namespace MountainTide
                 TextAt(g,label,16,Col("513e2c"),x+38,top-3,61,31,true);
                 HitBox(x,top-4,101,35,tab);x+=105;
             }
-            TextAt(g,Sea?"随身背包":"开垦名额   "+(FarmState.LandLimit-state.OpenCount)+" / "+FarmState.LandLimit+" 可用",15,Col("382d21"),824,top-1,280,28,true);
+            TextAt(g,InField?"开垦名额   "+(FarmState.LandLimit-state.OpenCount)+" / "+FarmState.LandLimit+" 可用":"随身背包",15,Col("382d21"),824,top-1,280,28,true);
             TrayButton(g,1140,top,100,25,"收起  ▾","fold");
             Plot cell=activePlot<0?null:state.Plots[activePlot];
             string title=Sea?"海上行囊":cell==null?"随身行囊":!cell.Opened?"未开垦草地":cell.CropId<0?"空田":Crop.All[cell.CropId].Name;
@@ -165,8 +166,8 @@ namespace MountainTide
                 detail=wild?"选择开垦位置":"田间农具";
                 guide="拿起铲子，再点要开垦或铲苗的地块。";
             }else if(drawer=="seeds"){
-                for(int i=0;i<3;i++)Card(g,294+i*132,art.SeedPackets[i],Crop.All[i].Name+"种子",state.Seeds[i].ToString(),"use-seed"+i,!Sea&&state.Seeds[i]>0);
-                detail="种袋";guide=Sea?"种子可以带回山村播种。":"拿起一种种子，再依次点击要播种的空田。";
+                for(int i=0;i<3;i++)Card(g,294+i*132,art.SeedPackets[i],Crop.All[i].Name+"种子",state.Seeds[i].ToString(),"use-seed"+i,InField&&state.Seeds[i]>0);
+                detail="种袋";guide=InField?"拿起一种种子，再依次点击要播种的空田。":Sea?"种子可以带回山村播种。":"出门到田里播种。";
             }else if(drawer=="stock"){
                 for(int i=0;i<3;i++)Card(g,294+i*132,art.Plants[i,2],Crop.All[i].Name,state.Stock[i].ToString(),"drawer-bg",true);
                 detail="收成入袋";guide=Sea?"码头用星元收购农作物。":"粮站付现钱，未来的码头付星元。";
