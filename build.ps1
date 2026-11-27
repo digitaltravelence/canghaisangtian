@@ -1,4 +1,4 @@
-﻿param([string]$OutputFile = '../沧海桑田.exe')
+param([string]$OutputFile = '../沧海桑田.exe')
 $ErrorActionPreference = 'Stop'
 $compiler = Join-Path $env:WINDIR 'Microsoft.NET/Framework64/v4.0.30319/csc.exe'
 if (!(Test-Path -LiteralPath $compiler)) {
@@ -16,6 +16,10 @@ $images = [ordered]@{
     'soil.png' = '美术/耕地.png'
     'turf.png' = '美术/草皮.png'
     'plants.png' = '美术/作物.png'
+    'garden-crops.png' = '美术/经营/时令作物.png'
+    'seed-depot.png' = '美术/经营/田边种仓.png'
+    'seed-cradle.png' = '美术/经营/播种机扣座.png'
+    'field-fleet.png' = '美术/经营/田间机队.png'
     'farm-motion.png' = '美术/场景动效/农场动效.png'
     'house-motion.png' = '美术/场景动效/山景农舍动效.png'
     'harbor-motion.png' = '美术/场景动效/避难所动效.png'
@@ -59,7 +63,7 @@ try {
     }
     $sources = @('Program.cs','FarmState.cs','Game.cs','Breeze.cs','SceneryMotion.cs','FarmEntrances.cs',
                  'GameArt.cs','HarvestPointer.cs','Interface.cs','FieldDrawer.cs','FarmAudio.cs',
-                 'AudioPreferences.cs','SoundSettings.cs')
+                 'AudioPreferences.cs','SoundSettings.cs','FieldCare.cs','CareAnimation.cs','HarvestFleet.cs','FarmMarket.cs','EquipmentPanel.cs','ToolSelection.cs','FarmAutomation.cs','TradeCatalog.cs','TradeQuantity.cs','BuildingLabels.cs','SeedDepot.cs','SeederFlights.cs')
     & $compiler /nologo /optimize+ /codepage:65001 /target:winexe /platform:anycpu /win32manifest:game.manifest /win32icon:watch.ico "/out:$OutputFile" /r:System.Windows.Forms.dll /r:System.Drawing.dll /r:System.Xml.dll @resourceArgs @sources
     if ($LASTEXITCODE -ne 0) { throw 'Game compilation failed.' }
 } finally {

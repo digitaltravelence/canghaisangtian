@@ -17,9 +17,9 @@ namespace MountainTide
         readonly SaveFile save;
         readonly FarmAudio audio;
         readonly GameArt art=new GameArt();
-        readonly GamePointer palm=new GamePointer(false),pluck=new GamePointer(true);
+        readonly GamePointer harvestHand=new GamePointer(false),pluck=new GamePointer(true);
         readonly GamePointer shovelPointer;
-        readonly GamePointer[] seedPointers=new GamePointer[3];
+        readonly GamePointer[] seedPointers=new GamePointer[Crop.All.Length];
         readonly Bitmap farm,port,house;
         readonly FarmEntrances entrances;
         readonly SceneryMotion farmMotion,houseMotion,harborMotion;
@@ -37,10 +37,11 @@ namespace MountainTide
         internal bool Sea {get{return scene==Scene.Harbor;}}
         bool InField {get{return scene==Scene.Farm;}}
         string panel="",tool="hand",message="",floatText="",hover="";
-        int selectedSeed=0,activePlot=-1,activeSale=0,saleQuantity=1;
+        int selectedSeed=0,activePlot=-1;
         double last,travelAt=-5,msgEnd,floatEnd;
         double paintedTime;
-        long lastSecond=-1;
+        bool sowingStroke;
+        PointF previousSeedPoint;
         static readonly PointF FarmStart=new PointF(1040,493);
         static readonly PointF HomeEntry=new PointF(303,236),SeedEntry=new PointF(542,280),GrainEntry=new PointF(865,287);
         static readonly PointF Threshold=new PointF(262,204);
@@ -60,6 +61,7 @@ namespace MountainTide
         public Game(FarmState data,SaveFile file)
         {
             state=data;save=file;
+            CreateToolPointers();completionShown=state.AutomationComplete;
             using(Bitmap cursorImage=new Bitmap(art.Spade,new Size(48,48))){
                 shovelPointer=new GamePointer(cursorImage,6,47);
             }
@@ -91,7 +93,7 @@ namespace MountainTide
             SetStyle(ControlStyles.ResizeRedraw|ControlStyles.OptimizedDoubleBuffer|ControlStyles.AllPaintingInWmPaint|ControlStyles.UserPaint,true);
             audio=new FarmAudio(Path.Combine(save.DirectoryPath,AudioPreferences.FileName));
             audio.StartMusic();
-            if(state.Automate(state.Now)>0)Store();timer.Interval=40;timer.Tick+=Tick;timer.Start();
+            timer.Interval=25;timer.Tick+=Tick;timer.Start();
         }
         static Bitmap Map(string name)
         {
@@ -117,8 +119,9 @@ namespace MountainTide
                 if(distance-step<.01){player=destination;walking=false;ringArrival=t;OnArrival();}
             }
             if(doorAt>=0)AdvanceEntrance(t);
-            long now=state.Now;
-            if(now!=lastSecond){lastSecond=now;int n=state.Automate(now);if(n>0){Store();if(InField)audio.Play(FarmSound.Reap);Tell("无人机已收获 "+n+" 份作物");}}
+            TickFieldCare(dt);
+            UpdateHarvestFleet(dt,state.Now);
+            CheckAutomationMilestone();
             if(WindowState!=FormWindowState.Minimized){UpdatePointer();Invalidate();}
         }
         void SwitchWorld()
@@ -128,8 +131,8 @@ namespace MountainTide
             flip=!Sea;facingAway=false;
             Tell(Sea?"百年以后，昔日的山谷成了大海。":"潮声远去，你回到了自己的农场。");
         }
-        internal void Travel(){if(T-travelAt<.9)return;StopWalking();CloseDrawer();panel="";hover="";floatEnd=0;msgEnd=0;travelAt=T;travelSwitched=false;}
-        void StopWalking(){walking=false;queuedAction="";heldCrop="";Capture=false;destination=player;ringStart=-10;ringArrival=-10;}
+        internal void Travel(){if(CareInputLocked||T-travelAt<.9)return;StopWalking();CloseDrawer();panel="";hover="";floatEnd=0;msgEnd=0;travelAt=T;travelSwitched=false;}
+        void StopWalking(){if(CareInputLocked)return;CancelManualCare();walking=false;queuedAction="";heldCrop="";Capture=false;destination=player;ringStart=-10;ringArrival=-10;}
         void AdvanceEntrance(double now)
         {
             double elapsed=now-doorAt;
@@ -146,7 +149,8 @@ namespace MountainTide
         }
         void WalkTo(PointF point,string action)
         {
-            panel="";destination=point;queuedAction=action;walking=true;ringStart=T;ringArrival=-10;
+            if(CareInputLocked)return;
+            CancelManualCare();panel="";destination=point;queuedAction=action;walking=true;ringStart=T;ringArrival=-10;
             float dx=point.X-player.X,dy=point.Y-player.Y;
             if(Math.Abs(dx)>3)flip=dx<0;
             facingAway=dy< -Math.Abs(dx)*.3f;
@@ -157,6 +161,7 @@ namespace MountainTide
         void OnArrival()
         {
             string action=queuedAction;queuedAction="";
+            if(ArriveFieldCare(action))return;
             if(action=="")return;
             if(action=="home"||action=="leaveHouse"){
                 StopWalking();CloseDrawer();tool="hand";panel="";msgEnd=0;floatEnd=0;hover="";
@@ -170,10 +175,11 @@ namespace MountainTide
             }
             if(action.StartsWith("plot")){
                 int i=int.Parse(action.Substring(4));Plot p=state.Plots[i];
-                if(p.CropId!=queuedCrop||p.Planted!=queuedPlanted){tool="hand";Tell("这格作物已变化，请重新选择。");return;}
+                if(p.CropId!=queuedCrop||p.Planted!=queuedPlanted){if(tool!="harvest")tool="hand";Tell("这格作物已变化，请重新选择。");return;}
                 Tend(i);return;
             }
             panel=action;activePlot=-1;
+            if(InTradeCatalog){tradeItem=-1;tradeNoticeUntil=-1;ResetTradeCatalog();}
         }
         void Tell(string s){message=s;msgEnd=T+3.4;}
         void Float(string s,PointF p){floatText=s;floatPoint=p;floatEnd=T+1.4;}
@@ -279,7 +285,7 @@ namespace MountainTide
             g.FillPolygon(B(Color.FromArgb(68,255,212,81)),edge);
             using(Pen pen=new Pen(Col("ffdf63"),3.5f))g.DrawPolygon(pen,edge);
         }
-        int Stage(int i){long left=state.Left(i,state.Now);return left==0?2:left<Crop.All[state.Plots[i].CropId].Seconds*.7?1:0;}
+        int Stage(int i){long left=state.Left(i,state.Now);return left==0?2:left<state.GrowthSeconds(state.Plots[i])*.7?1:0;}
         struct PlantSite
         {
             public int Plot, Tuft;
@@ -310,7 +316,7 @@ namespace MountainTide
         }
         float PlantBend(int i,int stage,int tuft){
             PointF p=Bed(i);double phase=paintedTime*1.23-p.X*.013+p.Y*.021+tuft*.23;
-            return (float)((Math.Sin(phase)+.28*Math.Sin(phase*1.67+tuft))*(1+stage*1.15));
+            return (float)((Math.Sin(phase)+.28*Math.Sin(phase*1.67+tuft))*(1+stage*1.15))+HarvestPlantBend(i,tuft);
         }
         void DrawPlant(Graphics g,PlantSite site){
             int i=site.Plot,tuft=site.Tuft;
@@ -354,6 +360,7 @@ namespace MountainTide
             FarmerPose pose=GetFarmerPose();
             float shadow=1-(float)thresholdStep*.48f;
             g.FillEllipse(B(Color.FromArgb(68,74,61,29)),player.X-22*shadow,player.Y-6*shadow,44*shadow,12*shadow);
+            if(DrawCareFarmer(g))return;
             GraphicsState sc=g.Save();g.TranslateTransform(player.X,pose.Y);if(flip)g.ScaleTransform(-1,1);
             g.RotateTransform(pose.Rotation);
             Sprite(g,pose.Image,-pose.Width/2,-pose.Height,pose.Width,pose.Height);g.Restore(sc);
@@ -376,6 +383,7 @@ namespace MountainTide
                 DrawWindowFlock(g,sceneTime);
                 DrawRoomBreeze(g,sceneTime);
                 DrawHearthAir(g,sceneTime);
+
                 DrawMarker(g);DrawFarmer(g);
                 HitBox(836,154,123,236,"leaveHouse");
                 HitBox(802,378,143,32,"leaveHouse");
@@ -386,19 +394,21 @@ namespace MountainTide
                 DrawButterflies(g,sceneTime);
                 if(doorAt>=0)entrances.DrawDoor(g,T-doorAt);
                 for(int i=0;i<state.Plots.Length;i++)DrawSoil(g,i);
+                DrawHarvestShadows(g);
+                DrawSeedStation(g);
+                DrawSeedDepot(g);
                 DrawMarker(g);bool farmerDrawn=false;
                 foreach(PlantSite site in PlantSites){
-                    if(!farmerDrawn&&player.Y<site.Root.Y){DrawFarmer(g);farmerDrawn=true;}
+                    if(!farmerDrawn&&player.Y<site.Root.Y){DrawHarvestFleet(g);DrawFarmer(g);farmerDrawn=true;}
                     DrawPlant(g,site);
                 }
-                if(!farmerDrawn)DrawFarmer(g);
-                if(state.MachinesOwned[0])Sprite(g,art.Tools[7],955,423,48,48);
-                if(state.MachinesOwned[1])Sprite(g,art.Tools[2],956,473,36,36);
-                if(state.MachinesOwned[2]){float x=565+(float)Math.Sin(T*.42)*145,y=351+(float)Math.Cos(T*.6)*32;Sprite(g,art.Tools[7],x,y,38,38);using(Pen pen=new Pen(cream,2)){g.DrawLine(pen,x-4,y+10,x+12,y+10);g.DrawLine(pen,x+24,y+10,x+42,y+10);}}
+                if(!farmerDrawn){DrawHarvestFleet(g);DrawFarmer(g);}
+                DrawFieldCare(g);
             }else{
                 windmill.Draw(g,789.5f,85.5f,(float)(sceneTime*29%360),1,1,25.5f,29.5f);
                 DrawMarker(g);DrawFarmer(g);HitBox(98,90,420,224,"harbor");HitBox(852,57,402,254,"tech");
             }
+            DrawBuildingLabels(g);
             if(floatEnd>T){double elapsed=1.4-(floatEnd-T);float y=floatPoint.Y-52-(float)elapsed*21;
                 Plate(g,floatPoint.X-81,y,162,32,Color.FromArgb(222,43,65,43),gold);
                 TextAt(g,floatText,15,gold,floatPoint.X-81,y,162,32,true,true);}
@@ -414,6 +424,7 @@ namespace MountainTide
             hits.Clear();DrawWorld(g);DrawHud(g);
             if(panel!=""){hits.Clear();DrawPanel(g);}
             DrawSettingsButton(g);
+            DrawTouchTool(g);
             if(doorAt>=0){
                 double elapsed=T-doorAt;
                 double shade=InField?(elapsed-1.10)/(EnterHouseAt-1.10):(EntranceEnd-elapsed)/(EntranceEnd-EnterHouseAt);
@@ -423,72 +434,104 @@ namespace MountainTide
                 using(Brush b=new SolidBrush(Color.FromArgb(Math.Max(0,a),247,232,179)))g.FillRectangle(b,0,0,W,H);
                 using(Pen pen=new Pen(Color.FromArgb(Math.Max(0,a),255,250,214),4))g.DrawEllipse(pen,640-(float)p*760,360-(float)p*760,(float)p*1520,(float)p*1520);}
         }
-        protected override void Dispose(bool disposing){if(disposing){timer.Stop();timer.Dispose();if(audio!=null)audio.Dispose();Cursor=Cursors.Default;palm.Dispose();pluck.Dispose();shovelPointer.Dispose();foreach(GamePointer p in seedPointers)p.Dispose();entrances.Dispose();flightWindow.Dispose();windmill.Dispose();windowFlowers.Dispose();leftCurtain.Dispose();rightCurtain.Dispose();shelfVine.Dispose();farm.Dispose();port.Dispose();house.Dispose();art.Dispose();foreach(Font f in fonts.Values)f.Dispose();foreach(Brush b in brushes.Values)b.Dispose();}base.Dispose(disposing);}
+        protected override void Dispose(bool disposing){if(disposing){timer.Stop();timer.Dispose();if(audio!=null)audio.Dispose();Cursor=Cursors.Default;pluck.Dispose();shovelPointer.Dispose();DisposeToolPointers();DisposeSeedDepotArt();foreach(GamePointer p in seedPointers)p.Dispose();entrances.Dispose();flightWindow.Dispose();windmill.Dispose();windowFlowers.Dispose();leftCurtain.Dispose();rightCurtain.Dispose();shelfVine.Dispose();farm.Dispose();port.Dispose();house.Dispose();art.Dispose();foreach(Font f in fonts.Values)f.Dispose();foreach(Brush b in brushes.Values)b.Dispose();}base.Dispose(disposing);}
         protected override void OnFormClosing(FormClosingEventArgs e){Store();base.OnFormClosing(e);}
         string FindAction(PointF p)
         {
-            for(int i=hits.Count-1;i>=0;i--)if(hits[i].Area.Contains(p))return hits[i].Enabled?hits[i].Action:"";
+            if(CareInputLocked)return "";
+            for(int i=hits.Count-1;i>=0;i--)if(hits[i].Area.Contains(p)){
+                if(hits[i].Action=="seed-depot-field"&&!SeedDepotContains(p))continue;
+                if((hits[i].Action=="cultivator-field"||hits[i].Action=="seed-depot-field")&&FarmerCovers(p))continue;
+                return hits[i].Enabled?hits[i].Action:"";
+            }
             if(panel==""&&InField){
                 string entry=entrances.At(p);
                 if(entry!="")return FarmerCovers(p)?"":entry;
                 int ground=GroundAt(p);
-                if(drawer==""&&(tool=="seed"||tool=="shovel"))return ground>=0?"plot"+ground:"";
                 if(ground>=0&&drawer!="")return "plot"+ground;
-                // Match the frontmost painted leaf, then check the ground underneath it.
                 bool behindFarmer=FarmerCovers(p);
-                for(int layer=PlantSites.Length-1;layer>=0;layer--){
-                    PlantSite site=PlantSites[layer];
-                    if(behindFarmer&&site.Root.Y<=player.Y)return "";
-                    int i=site.Plot,id=state.Plots[i].CropId;if(id<0)continue;
-                    int stage=Stage(i);Bitmap img=art.Plants[id,stage];
-                    RectangleF b=PlantBounds(site,stage);if(p.Y<b.Top||p.Y>=b.Bottom)continue;
-                    float localX=p.X-PlantBend(i,stage,site.Tuft)*(b.Bottom-p.Y)/b.Height;
-                    if(localX<b.Left||localX>=b.Right)continue;
-                    int px=Math.Min(img.Width-1,(int)((localX-b.X)*img.Width/b.Width)),py=Math.Min(img.Height-1,(int)((p.Y-b.Y)*img.Height/b.Height));
-                    if(img.GetPixel(px,py).A>60)return "plot"+i;
-                }
-                if(!behindFarmer&&ground>=0)return "plot"+ground;
+                int plant=VisiblePlantAt(p,behindFarmer);
+                bool groundTool=drawer==""&&(tool=="seed"||tool=="shovel");
+                if(plant>=0&&(!groundTool||IsMature(plant)||IsMature(ground)))return "plot"+plant;
+                if(ground>=0&&(!behindFarmer||groundTool&&!IsMature(ground)))return "plot"+ground;
             }
             return "";
         }
+        int VisiblePlantAt(PointF p,bool behindFarmer)
+        {
+            for(int layer=PlantSites.Length-1;layer>=0;layer--){
+                PlantSite site=PlantSites[layer];
+                if(behindFarmer&&site.Root.Y<=player.Y)break;
+                int i=site.Plot,id=state.Plots[i].CropId;if(id<0)continue;
+                int stage=Stage(i);Bitmap img=art.Plants[id,stage];
+                RectangleF b=PlantBounds(site,stage);if(p.Y<b.Top||p.Y>=b.Bottom)continue;
+                float localX=p.X-PlantBend(i,stage,site.Tuft)*(b.Bottom-p.Y)/b.Height;
+                if(localX<b.Left||localX>=b.Right)continue;
+                int px=Math.Min(img.Width-1,(int)((localX-b.X)*img.Width/b.Width)),py=Math.Min(img.Height-1,(int)((p.Y-b.Y)*img.Height/b.Height));
+                if(img.GetPixel(px,py).A>60)return i;
+            }
+            return -1;
+        }
         PointF WorldPoint(MouseEventArgs e){return new PointF((e.X-offsetX)/scale,(e.Y-offsetY)/scale);}
-        bool Ripe(string action){if(!action.StartsWith("plot")||Sea||panel!=""||drawer!=""||tool!="hand")return false;int i=int.Parse(action.Substring(4));return state.Plots[i].CropId>=0&&state.Left(i,state.Now)==0;}
+        bool IsMature(int i){return i>=0&&state.Plots[i].CropId>=0&&state.Left(i,state.Now)==0;}
+        bool Ripe(string action){return InField&&panel==""&&drawer==""&&action.StartsWith("plot")&&IsMature(int.Parse(action.Substring(4)));}
         void UpdatePointer(){
+            if(CareInputLocked){hover="";Cursor=Cursors.Default;return;}
             hover=mouse.X<0||T-travelAt<.9||doorAt>=0?"":FindAction(mouse);
-            Cursor desired=heldCrop!=""&&hover==heldCrop?pluck.Value:Ripe(hover)?palm.Value:hover==""?Cursors.Default:Cursors.Hand;
-            if(InField&&panel==""&&drawer==""&&T-travelAt>=.9){
-                if(tool=="shovel")desired=shovelPointer.Value;
-                else if(tool=="seed")desired=seedPointers[selectedSeed].Value;
+            Cursor desired=hover==""||hover.StartsWith("plot")?Cursors.Default:Cursors.Hand;
+            if(InField&&panel==""&&drawer==""&&T-travelAt>=.9&&doorAt<0&&mouse.X>=0){
+                Cursor selected=heldCrop!=""&&hover==heldCrop?pluck.Value:SelectedToolPointer();
+                if(selected!=null)desired=selected;
             }
             if(Cursor!=desired)Cursor=desired;
         }
         protected override void OnMouseMove(MouseEventArgs e){
-            base.OnMouseMove(e);mouse=WorldPoint(e);
+            base.OnMouseMove(e);mouse=WorldPoint(e);if(CareInputLocked)return;TrackContact(mouse,false);
             if(draggedVolume!=null){SetVolumeAt(mouse.X);Invalidate();return;}
+            if(tradeSliderHeld){SetTradeAt(mouse.X);Invalidate();return;}
+            if(InTradeCatalog&&tradeItem<0&&CatalogPointerMove(mouse)){Invalidate();return;}
+            if(sowingStroke&&tool=="seed"&&InField&&panel==""&&drawer=="")SowAlong(mouse);
             UpdatePointer();
         }
         protected override void OnMouseLeave(EventArgs e){base.OnMouseLeave(e);mouse=new PointF(-500,-500);hover="";Cursor=Cursors.Default;}
         protected override void OnMouseCaptureChanged(EventArgs e){
             base.OnMouseCaptureChanged(e);
-            if(!Capture){heldCrop="";FinishVolumeDrag(false);}
+            if(!Capture){heldCrop="";sowingStroke=false;tradeSliderHeld=false;CancelCatalogDrag();FinishVolumeDrag(false);}
         }
         protected override void OnMouseUp(MouseEventArgs e){
             base.OnMouseUp(e);if(e.Button!=MouseButtons.Left)return;
+            if(touching){touchPoint=WorldPoint(e);touchUntil=T+.85;touching=false;}
+            if(CareInputLocked)return;
             if(draggedVolume!=null){SetVolumeAt(WorldPoint(e).X);FinishVolumeDrag(true);UpdatePointer();Refresh();return;}
+            if(tradeSliderHeld){SetTradeAt(WorldPoint(e).X);EndTradeSlider();UpdatePointer();Refresh();return;}
+            if(InTradeCatalog&&tradeItem<0&&CatalogPointerUp(WorldPoint(e))){UpdatePointer();Refresh();return;}
+            if(sowingStroke){SowAlong(WorldPoint(e));sowingStroke=false;Capture=false;Refresh();return;}
             if(heldCrop=="")return;
             string target=heldCrop;heldCrop="";Capture=false;mouse=WorldPoint(e);
             if(FindAction(mouse)==target&&Ripe(target))Action(target);UpdatePointer();Refresh();
         }
         protected override void OnMouseDown(MouseEventArgs e){
-            base.OnMouseDown(e);if(T-travelAt<.9||doorAt>=0)return;
+            base.OnMouseDown(e);if(CareInputLocked)return;TrackContact(WorldPoint(e),true);if(T-travelAt<.9||doorAt>=0)return;
             if(e.Button==MouseButtons.Right&&panel=="settings"){CloseSoundSettings();Refresh();return;}
-            if(e.Button==MouseButtons.Right){StopWalking();CloseDrawer();panel="";tool="hand";Refresh();return;}
-            if(e.Button!=MouseButtons.Left)return;mouse=WorldPoint(e);string a=FindAction(mouse);
+            if(e.Button==MouseButtons.Right&&InTradeCatalog&&tradeItem>=0){CloseTradeDetail();Refresh();return;}
+            if(e.Button==MouseButtons.Right){mouse=WorldPoint(e);StopWalking();CloseDrawer();panel="";tool="hand";UpdatePointer();Refresh();return;}
+            if(e.Button!=MouseButtons.Left)return;mouse=WorldPoint(e);
+            if(InTradeCatalog&&tradeItem<0&&CatalogPointerDown(mouse)){Refresh();return;}
+            string a=FindAction(mouse);
             if(Ripe(a)){StopWalking();heldCrop=a;Capture=true;UpdatePointer();}
+            else if(InField&&panel==""&&drawer==""&&tool=="seed"&&a.StartsWith("plot")&&state.Plots[int.Parse(a.Substring(4))].CropId<0){
+                Action(a);previousSeedPoint=mouse;sowingStroke=true;Capture=true;
+            }
             else if(a!="")Action(a);
             else if(panel==""&&Walkable(mouse)){CloseDrawer();WalkTo(mouse,"");}
             else if(panel==""){CloseDrawer();if(queuedAction=="home"||queuedAction=="supply"||queuedAction=="grain")StopWalking();}
             Refresh();
+        }
+        protected override void OnMouseWheel(MouseEventArgs e){
+            base.OnMouseWheel(e);
+            if(CareInputLocked)return;
+            if(panel=="seed-depot"&&ScrollSeedDepot(WorldPoint(e),e.Delta)){UpdatePointer();Refresh();return;}
+            if(InTradeCatalog&&tradeItem<0&&ScrollTradeCatalog(WorldPoint(e),e.Delta)){UpdatePointer();Refresh();}
         }
         bool Walkable(PointF p){
             PointF[] path=scene==Scene.House?new[]{new PointF(455,451),new PointF(596,408),new PointF(890,393),new PointF(944,414),new PointF(997,565),new PointF(984,686),new PointF(411,686),new PointF(409,551)}:
@@ -497,15 +540,17 @@ namespace MountainTide
             using(GraphicsPath gp=new GraphicsPath()){gp.AddPolygon(path);return gp.IsVisible(p);}
         }
         protected override void OnKeyDown(KeyEventArgs e){
-            base.OnKeyDown(e);if(e.KeyCode==Keys.F11){ToggleFullScreen();return;}
+            base.OnKeyDown(e);if(CareInputLocked)return;
+            if(e.KeyCode==Keys.F11){ToggleFullScreen();return;}
             if(doorAt>=0)return;
             if(e.KeyCode==Keys.Escape&&panel=="settings"){CloseSoundSettings();Refresh();return;}
+            if(InTradeCatalog&&tradeItem>=0&&TradeDetailKey(e.KeyCode)){e.Handled=true;e.SuppressKeyPress=true;Refresh();return;}
             if(e.KeyCode==Keys.Escape){StopWalking();if(panel!="")panel="";else if(drawer!="")CloseDrawer();else if(fullscreen)ToggleFullScreen();else tool="hand";Refresh();return;}
             if(panel!=""||T-travelAt<.9)return;
             switch(e.KeyCode){
                 case Keys.D1:case Keys.NumPad1:if(InField)Action("hand");break;
                 case Keys.D2:case Keys.NumPad2:if(InField)Action("seeds");break;
-                case Keys.D3:case Keys.NumPad3:if(InField)Action("feedtool");break;
+                case Keys.D3:case Keys.NumPad3:if(InField)Action("use-feed");break;
                 case Keys.W:if(InField)Action("use-water");break;
                 case Keys.B:case Keys.D4:Action("bag");break;
                 case Keys.T:case Keys.Space:Travel();break;

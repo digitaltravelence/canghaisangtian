@@ -11,15 +11,19 @@ namespace MountainTide
     internal sealed class GameArt : IDisposable
     {
         public readonly Bitmap Soil, Spade, WateringCan;
-        public readonly Bitmap[,] Plants=new Bitmap[3,3],FarmerFrames=new Bitmap[2,3];
+        public readonly Bitmap[,] Plants=new Bitmap[Crop.All.Length,3],FarmerFrames=new Bitmap[2,3];
+        readonly Bitmap[] machines;
         public readonly Bitmap[] Tools=new Bitmap[8];
-        public readonly Bitmap[] SeedPackets=new Bitmap[3];
+        public readonly Bitmap[] SeedPackets=new Bitmap[Crop.All.Length];
         public GameArt()
         {
             Soil=ReadSheet("soil.png",new[]{0,887},new[]{new[]{0,1774}},420)[0];
             Bitmap[] plants=ReadSheet("plants.png",new[]{0,376,762,1254},new[]{new[]{0,346,779,1254},new[]{0,350,771,1254},new[]{0,343,759,1254}},150);
             Bitmap[] farmer=ReadSheet("farmer.png",new[]{0,505,1024},new[]{new[]{0,505,1012,1536},new[]{0,505,1012,1536}},180);
             for(int i=0;i<plants.Length;i++)Plants[i/3,i%3]=plants[i];
+            Bitmap[] newCrops=ReadGrid("garden-crops.png",3,2,160);
+            for(int i=0;i<newCrops.Length;i++)Plants[3+i/3,i%3]=newCrops[i];
+            machines=ReadGrid("field-fleet.png",4,2,160,7);
             for(int i=0;i<SeedPackets.Length;i++)SeedPackets[i]=MakePacket(i);
             for(int i=0;i<farmer.Length;i++)FarmerFrames[i/3,i%3]=farmer[i];
             Tools=ReadSheet("items.png",new[]{0,442,887},new[]{new[]{0,430,866,1308,1774},new[]{0,414,848,1256,1774}},100);
@@ -32,7 +36,18 @@ namespace MountainTide
             using(Bitmap image=new Bitmap(stream))
                 return image.Clone(new Rectangle(0,0,image.Width,image.Height),PixelFormat.Format32bppPArgb);
         }
-        static Bitmap[] ReadSheet(string name,int[] rows,int[][] columns,int maxSide)
+        public Bitmap MachineIcon(int id){return machines[id];}
+
+        static Bitmap[] ReadGrid(string name,int columns,int rows,int cell,int count=0)
+        {
+            int[] y=new int[rows+1],x=new int[columns+1];
+            for(int i=0;i<y.Length;i++)y[i]=i*cell;
+            for(int i=0;i<x.Length;i++)x[i]=i*cell;
+            int[][] cuts=new int[rows][];
+            for(int i=0;i<rows;i++)cuts[i]=x;
+            return ReadSheet(name,y,cuts,cell,count);
+        }
+        static Bitmap[] ReadSheet(string name,int[] rows,int[][] columns,int maxSide,int count=0)
         {
             using(Stream stream=Assembly.GetExecutingAssembly().GetManifestResourceStream(name))
             using(Bitmap sheet=new Bitmap(stream)){
@@ -40,8 +55,8 @@ namespace MountainTide
                 BitmapData data=sheet.LockBits(all,ImageLockMode.ReadOnly,PixelFormat.Format32bppArgb);
                 byte[] pixels=new byte[data.Stride*data.Height];
                 try{Marshal.Copy(data.Scan0,pixels,0,pixels.Length);}finally{sheet.UnlockBits(data);}
-                int cols=columns[0].Length-1;Bitmap[] result=new Bitmap[(rows.Length-1)*cols];
-                for(int r=0;r<rows.Length-1;r++)for(int c=0;c<cols;c++){
+                int cols=columns[0].Length-1;Bitmap[] result=new Bitmap[count>0?count:(rows.Length-1)*cols];
+                for(int r=0;r<rows.Length-1;r++)for(int c=0;c<cols&&r*cols+c<result.Length;c++){
                     int x0=columns[r][c],x1=columns[r][c+1],y0=rows[r],y1=rows[r+1];
                     int left=x1,top=y1,right=x0,bottom=y0;
                     for(int y=y0;y<y1;y++)for(int x=x0;x<x1;x++){
@@ -60,7 +75,7 @@ namespace MountainTide
         }
         Bitmap MakePacket(int crop){
             Bitmap packet=new Bitmap(80,80,PixelFormat.Format32bppPArgb);
-            Color band=new[]{Color.FromArgb(205,150,53),Color.FromArgb(189,87,83),Color.FromArgb(109,147,67)}[crop];
+            Color band=new[]{Color.FromArgb(205,150,53),Color.FromArgb(189,87,83),Color.FromArgb(109,147,67),Color.FromArgb(68,141,95),Color.FromArgb(205,111,48)}[crop];
             using(Graphics g=Graphics.FromImage(packet))
             using(Pen edge=new Pen(Color.FromArgb(102,72,39),2.7f))
             using(Brush paper=new SolidBrush(Color.FromArgb(255,233,184)))
@@ -76,6 +91,6 @@ namespace MountainTide
             }
             return packet;
         }
-        public void Dispose(){Soil.Dispose();Spade.Dispose();WateringCan.Dispose();foreach(Bitmap b in SeedPackets)b.Dispose();foreach(Bitmap b in Tools)b.Dispose();foreach(Bitmap b in Plants)b.Dispose();foreach(Bitmap b in FarmerFrames)b.Dispose();}
+        public void Dispose(){Soil.Dispose();Spade.Dispose();WateringCan.Dispose();foreach(Bitmap b in machines)b.Dispose();foreach(Bitmap b in SeedPackets)b.Dispose();foreach(Bitmap b in Tools)b.Dispose();foreach(Bitmap b in Plants)b.Dispose();foreach(Bitmap b in FarmerFrames)b.Dispose();}
     }
 }

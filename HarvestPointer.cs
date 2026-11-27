@@ -18,10 +18,11 @@ namespace MountainTide
         [DllImport("gdi32.dll")] static extern bool DeleteObject(IntPtr bitmap);
         readonly IntPtr handle;
         public readonly Cursor Value;
+        public readonly Bitmap Artwork;
         public GamePointer(bool closed)
         {
-            using(Bitmap image=new Bitmap(44,44))
-            using(Graphics g=Graphics.FromImage(image))
+            Artwork=new Bitmap(44,44);
+            using(Graphics g=Graphics.FromImage(Artwork))
             using(Pen edge=new Pen(Color.FromArgb(78,57,40),2))
             using(GraphicsPath hand=new GraphicsPath()){
                 g.SmoothingMode=SmoothingMode.AntiAlias;edge.LineJoin=LineJoin.Round;
@@ -55,7 +56,7 @@ namespace MountainTide
                 }
                 Point[] cuff={new Point(24,34),new Point(33,23),new Point(40,28),new Point(31,39)};
                 using(Brush b=new SolidBrush(Color.FromArgb(52,153,149)))g.FillPolygon(b,cuff);g.DrawPolygon(edge,cuff);
-                handle=Create(image,12,12);
+                handle=Create(Artwork,12,12);
                 Value=new Cursor(handle);
             }
         }
@@ -73,6 +74,6 @@ namespace MountainTide
                 return cursor;
             }finally{DeleteObject(info.mask);DeleteObject(info.color);DestroyIcon(original);}
         }
-        public void Dispose(){Value.Dispose();DestroyCursor(handle);}
+        public void Dispose(){Value.Dispose();DestroyCursor(handle);if(Artwork!=null)Artwork.Dispose();}
     }
 }
