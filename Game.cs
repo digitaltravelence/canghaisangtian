@@ -15,6 +15,7 @@ namespace MountainTide
         const int W=1280,H=720;
         readonly FarmState state;
         readonly SaveFile save;
+        readonly FarmAudio audio;
         readonly GameArt art=new GameArt();
         readonly GamePointer palm=new GamePointer(false),pluck=new GamePointer(true);
         readonly GamePointer shovelPointer;
@@ -59,9 +60,8 @@ namespace MountainTide
         public Game(FarmState data,SaveFile file)
         {
             state=data;save=file;
-            using(Bitmap cursorImage=new Bitmap(48,48)){
-                using(Graphics g=Graphics.FromImage(cursorImage)){g.SmoothingMode=SmoothingMode.AntiAlias;DrawSpade(g,0,0,48);}
-                shovelPointer=new GamePointer(cursorImage,6,43);
+            using(Bitmap cursorImage=new Bitmap(art.Spade,new Size(48,48))){
+                shovelPointer=new GamePointer(cursorImage,6,47);
             }
             for(int i=0;i<seedPointers.Length;i++)
                 using(Bitmap packet=new Bitmap(art.SeedPackets[i],new Size(43,43)))seedPointers[i]=new GamePointer(packet,6,36);
@@ -89,6 +89,8 @@ namespace MountainTide
             int width=Math.Min(1280,Math.Min(work.Width-42,(work.Height-76)*16/9));ClientSize=new Size(width,width*9/16);
             MinimumSize=new Size(740,450);StartPosition=FormStartPosition.CenterScreen;
             SetStyle(ControlStyles.ResizeRedraw|ControlStyles.OptimizedDoubleBuffer|ControlStyles.AllPaintingInWmPaint|ControlStyles.UserPaint,true);
+            audio=new FarmAudio(Path.Combine(save.DirectoryPath,AudioPreferences.FileName));
+            audio.StartMusic();
             if(state.Automate(state.Now)>0)Store();timer.Interval=40;timer.Tick+=Tick;timer.Start();
         }
         static Bitmap Map(string name)
@@ -116,7 +118,7 @@ namespace MountainTide
             }
             if(doorAt>=0)AdvanceEntrance(t);
             long now=state.Now;
-            if(now!=lastSecond){lastSecond=now;int n=state.Automate(now);if(n>0){Store();Tell("无人机已收获 "+n+" 份作物");}}
+            if(now!=lastSecond){lastSecond=now;int n=state.Automate(now);if(n>0){Store();if(InField)audio.Play(FarmSound.Reap);Tell("无人机已收获 "+n+" 份作物");}}
             if(WindowState!=FormWindowState.Minimized){UpdatePointer();Invalidate();}
         }
         void SwitchWorld()
@@ -201,14 +203,35 @@ namespace MountainTide
         {
             g.InterpolationMode=InterpolationMode.Bilinear;g.PixelOffsetMode=PixelOffsetMode.Half;g.DrawImage(bm,new RectangleF(x,y,w,h));g.PixelOffsetMode=PixelOffsetMode.Default;
         }
-        // Each pair of staggered rows fits six wide diamonds and five offset ones.
-        const int HalfBedWidth=74,HalfBedHeight=28;
-        internal static PointF Bed(int i){
-            int pair=i/11,slot=i%11;bool odd=slot>=6;
-            return new PointF(140+(odd?HalfBedWidth:0)+(odd?slot-6:slot)*HalfBedWidth*2,
-                              336+(pair*2+(odd?1:0))*HalfBedHeight);
+        const int FieldColumns = FarmState.Columns, FieldRows = FarmState.Rows;
+        const int FieldX = 152, FieldY = 309, ColumnWidth = 84, RowShift = -30, RowHeight = 51;
+
+        static PointF FieldPoint(float column, float row)
+        {
+            return new PointF(FieldX + column * ColumnWidth + row * RowShift, FieldY + row * RowHeight);
         }
-        static PointF[] Corners(PointF p){return new[]{new PointF(p.X,p.Y-HalfBedHeight),new PointF(p.X+HalfBedWidth,p.Y),new PointF(p.X,p.Y+HalfBedHeight),new PointF(p.X-HalfBedWidth,p.Y)};}
+
+        static int PlotIndex(int column, int row)
+        {
+            return row * FieldColumns + column;
+        }
+        internal static PointF Bed(int i)
+        {
+            return FieldPoint(i % FieldColumns + .5f, i / FieldColumns + .5f);
+        }
+        static int GroundAt(PointF point)
+        {
+            float row = (point.Y - FieldY) / RowHeight;
+            float column = (point.X - FieldX - row * RowShift) / ColumnWidth;
+            if (row < 0 || row > FieldRows || column < 0 || column > FieldColumns) return -1;
+            return PlotIndex(Math.Min((int)column, FieldColumns - 1), Math.Min((int)row, FieldRows - 1));
+        }
+        static PointF[] Corners(PointF center)
+        {
+            float x = center.X - (ColumnWidth + RowShift) / 2f, y = center.Y - RowHeight / 2f;
+            return new[]{new PointF(x,y),new PointF(x+ColumnWidth,y),
+                new PointF(x+ColumnWidth+RowShift,y+RowHeight),new PointF(x+RowShift,y+RowHeight)};
+        }
         static void DrawGrassPlots(Bitmap map)
         {
             using(Stream stream=Assembly.GetExecutingAssembly().GetManifestResourceStream("turf.png"))
@@ -216,29 +239,40 @@ namespace MountainTide
             using(Graphics g=Graphics.FromImage(map)){
                 g.InterpolationMode=InterpolationMode.HighQualityBicubic;
                 g.PixelOffsetMode=PixelOffsetMode.Half;
-                // Two short-grass samples per diagonal. Adjacent cells share one painted edge.
-                int width=seams.Width/4;
-                const int margin=4;
-                var painted=new HashSet<Point>();
-                for(int i=0;i<FarmState.CellCount;i++){
-                    PointF[] corners=Corners(Bed(i));
-                    for(int j=0;j<corners.Length;j++){
-                        Point a=Point.Round(corners[j]),b=Point.Round(corners[(j+1)%corners.Length]);
-                        Point middle=new Point((a.X+b.X)/2,(a.Y+b.Y)/2);
-                        if(!painted.Add(middle))continue;
-                        bool slopesDown=(a.X<b.X)==(a.Y<b.Y);
-                        int sample=(slopesDown?0:2)+(i+j)%2;
-                        Rectangle edge=new Rectangle(Math.Min(a.X,b.X),Math.Min(a.Y,b.Y)-margin,
-                            HalfBedWidth,HalfBedHeight+2*margin);
-                        g.DrawImage(seams,edge,sample*width,0,width,seams.Height,GraphicsUnit.Pixel);
-                    }
-                }
+                for(int row=0;row<=FieldRows;row++)
+                    for(int col=0;col<FieldColumns;col++)
+                        DrawGrassEdge(g,seams,FieldPoint(col,row),FieldPoint(col+1,row),(row+col)%2);
+                for(int col=0;col<=FieldColumns;col++)
+                    for(int row=0;row<FieldRows;row++)
+                        DrawGrassEdge(g,seams,FieldPoint(col,row+1),FieldPoint(col,row),2+(row+col)%2);
             }
+        }
+        static void DrawGrassEdge(Graphics g, Bitmap atlas, PointF from, PointF to, int sample)
+        {
+            // The painted tufts run diagonally between y=20 and y=160 in each atlas frame.
+            // Map that centreline exactly onto the two grid vertices, preserving its grassy fringe.
+            int width=atlas.Width/4;
+            float start=sample<2?20:160, end=atlas.Height-start;
+            float dx=to.X-from.X, dy=to.Y-from.Y;
+            float grassScale=.115f/(float)Math.Sqrt(dx*dx+dy*dy);
+            float nx=-dy*grassScale, ny=dx*grassScale;
+            PointF[] dest={new PointF(from.X-nx*start,from.Y-ny*start),
+                new PointF(to.X-nx*end,to.Y-ny*end),
+                new PointF(from.X+nx*(atlas.Height-start),from.Y+ny*(atlas.Height-start))};
+            g.DrawImage(atlas,dest,new Rectangle(sample*width,0,width,atlas.Height),GraphicsUnit.Pixel);
         }
         void DrawSoil(Graphics g,int i)
         {
             PointF p=Bed(i);
-            if(state.Plots[i].Opened)Sprite(g,art.Soil,p.X-HalfBedWidth+2,p.Y-HalfBedHeight+1,HalfBedWidth*2-4,HalfBedHeight*2-2);
+            if(state.Plots[i].Opened){
+                // Map the original painted diamond's four tips to the four cell corners.
+                // A narrow grass margin keeps adjoining beds readable after tilling.
+                const float inset=.94f;
+                PointF[] dest={new PointF(p.X-ColumnWidth*inset,p.Y),
+                    new PointF(p.X-RowShift*inset,p.Y-RowHeight*inset),
+                    new PointF(p.X+RowShift*inset,p.Y+RowHeight*inset)};
+                g.DrawImage(art.Soil,dest,new Rectangle(0,0,art.Soil.Width,art.Soil.Height),GraphicsUnit.Pixel);
+            }
             bool aiming=drawer==""&&(tool=="seed"||tool=="shovel")&&hover=="plot"+i;
             if(panel!=""||!(aiming||(drawer!=""&&i==activePlot)))return;
             PointF[] edge=Corners(p);
@@ -246,27 +280,47 @@ namespace MountainTide
             using(Pen pen=new Pen(Col("ffdf63"),3.5f))g.DrawPolygon(pen,edge);
         }
         int Stage(int i){long left=state.Left(i,state.Now);return left==0?2:left<Crop.All[state.Plots[i].CropId].Seconds*.7?1:0;}
-        RectangleF PlantBounds(int i,int stage,int tuft){
-            PointF p=Bed(i);Bitmap image=art.Plants[state.Plots[i].CropId,stage];
-            float h=stage==2?50:stage==1?36:20;
-            float w=Math.Min(55,h*image.Width/image.Height);
-            float x=p.X+(tuft==0?-23:tuft==1?23:0);
-            float y=p.Y+(tuft==2?13:-1);return new RectangleF(x-w/2,y-h,w,h);
+        struct PlantSite
+        {
+            public int Plot, Tuft;
+            public PointF Root;
+        }
+        static readonly PlantSite[] PlantSites = CreatePlantSites();
+        static PlantSite[] CreatePlantSites()
+        {
+            PlantSite[] sites=new PlantSite[FarmState.CellCount*3];
+            for(int i=0;i<FarmState.CellCount;i++){
+                for(int tuft=0;tuft<3;tuft++){
+                    float across=tuft==0?.24f:tuft==1?.74f:.49f, down=tuft==2?.74f:.43f;
+                    PointF root=FieldPoint(i%FieldColumns+across,i/FieldColumns+down);
+                    sites[i*3+tuft]=new PlantSite{Plot=i,Tuft=tuft,Root=root};
+                }
+            }
+            Array.Sort(sites,delegate(PlantSite a,PlantSite b){
+                int depth=a.Root.Y.CompareTo(b.Root.Y);
+                return depth!=0?depth:a.Root.X.CompareTo(b.Root.X);
+            });
+            return sites;
+        }
+        RectangleF PlantBounds(PlantSite site,int stage){
+            Bitmap image=art.Plants[state.Plots[site.Plot].CropId,stage];
+            float h=stage==2?45:stage==1?32:19;
+            float w=Math.Min(42,h*image.Width/image.Height);
+            return new RectangleF(site.Root.X-w/2,site.Root.Y-h,w,h);
         }
         float PlantBend(int i,int stage,int tuft){
             PointF p=Bed(i);double phase=paintedTime*1.23-p.X*.013+p.Y*.021+tuft*.23;
             return (float)((Math.Sin(phase)+.28*Math.Sin(phase*1.67+tuft))*(1+stage*1.15));
         }
-        void DrawPlants(Graphics g,int i){
+        void DrawPlant(Graphics g,PlantSite site){
+            int i=site.Plot,tuft=site.Tuft;
             int id=state.Plots[i].CropId;if(id<0)return;int stage=Stage(i);
             Bitmap image=art.Plants[id,stage];g.PixelOffsetMode=PixelOffsetMode.Half;
-            for(int tuft=0;tuft<3;tuft++){
-                RectangleF r=PlantBounds(i,stage,tuft);float bend=PlantBend(i,stage,tuft);
-                g.DrawImage(image,new[]{new PointF(r.Left+bend,r.Top),new PointF(r.Right+bend,r.Top),new PointF(r.Left,r.Bottom)},
-                    new RectangleF(0,0,image.Width,image.Height),GraphicsUnit.Pixel);
-            }
+            RectangleF r=PlantBounds(site,stage);float bend=PlantBend(i,stage,tuft);
+            g.DrawImage(image,new[]{new PointF(r.Left+bend,r.Top),new PointF(r.Right+bend,r.Top),new PointF(r.Left,r.Bottom)},
+                new RectangleF(0,0,image.Width,image.Height),GraphicsUnit.Pixel);
             g.PixelOffsetMode=PixelOffsetMode.Default;
-            PointF p=Bed(i);if(stage==2)Spark(g,p.X+24,p.Y-47+(float)Math.Sin(T*2+i)*3,3.8f,gold);
+            if(tuft==2&&stage==2){PointF p=Bed(i);Spark(g,p.X+19,p.Y-49+(float)Math.Sin(T*2+i)*3,3.8f,gold);}
         }
         void Spark(Graphics g,float x,float y,float r,Color color)
         {
@@ -333,8 +387,9 @@ namespace MountainTide
                 if(doorAt>=0)entrances.DrawDoor(g,T-doorAt);
                 for(int i=0;i<state.Plots.Length;i++)DrawSoil(g,i);
                 DrawMarker(g);bool farmerDrawn=false;
-                for(int i=0;i<state.Plots.Length;i++){
-                    if(!farmerDrawn&&player.Y<Bed(i).Y+15){DrawFarmer(g);farmerDrawn=true;}DrawPlants(g,i);
+                foreach(PlantSite site in PlantSites){
+                    if(!farmerDrawn&&player.Y<site.Root.Y){DrawFarmer(g);farmerDrawn=true;}
+                    DrawPlant(g,site);
                 }
                 if(!farmerDrawn)DrawFarmer(g);
                 if(state.MachinesOwned[0])Sprite(g,art.Tools[7],955,423,48,48);
@@ -358,6 +413,7 @@ namespace MountainTide
             g.SmoothingMode=SmoothingMode.AntiAlias;g.TextRenderingHint=System.Drawing.Text.TextRenderingHint.AntiAliasGridFit;
             hits.Clear();DrawWorld(g);DrawHud(g);
             if(panel!=""){hits.Clear();DrawPanel(g);}
+            DrawSettingsButton(g);
             if(doorAt>=0){
                 double elapsed=T-doorAt;
                 double shade=InField?(elapsed-1.10)/(EnterHouseAt-1.10):(EntranceEnd-elapsed)/(EntranceEnd-EnterHouseAt);
@@ -367,7 +423,7 @@ namespace MountainTide
                 using(Brush b=new SolidBrush(Color.FromArgb(Math.Max(0,a),247,232,179)))g.FillRectangle(b,0,0,W,H);
                 using(Pen pen=new Pen(Color.FromArgb(Math.Max(0,a),255,250,214),4))g.DrawEllipse(pen,640-(float)p*760,360-(float)p*760,(float)p*1520,(float)p*1520);}
         }
-        protected override void Dispose(bool disposing){if(disposing){timer.Stop();timer.Dispose();Cursor=Cursors.Default;palm.Dispose();pluck.Dispose();shovelPointer.Dispose();foreach(GamePointer p in seedPointers)p.Dispose();entrances.Dispose();flightWindow.Dispose();windmill.Dispose();windowFlowers.Dispose();leftCurtain.Dispose();rightCurtain.Dispose();shelfVine.Dispose();farm.Dispose();port.Dispose();house.Dispose();art.Dispose();foreach(Font f in fonts.Values)f.Dispose();foreach(Brush b in brushes.Values)b.Dispose();}base.Dispose(disposing);}
+        protected override void Dispose(bool disposing){if(disposing){timer.Stop();timer.Dispose();if(audio!=null)audio.Dispose();Cursor=Cursors.Default;palm.Dispose();pluck.Dispose();shovelPointer.Dispose();foreach(GamePointer p in seedPointers)p.Dispose();entrances.Dispose();flightWindow.Dispose();windmill.Dispose();windowFlowers.Dispose();leftCurtain.Dispose();rightCurtain.Dispose();shelfVine.Dispose();farm.Dispose();port.Dispose();house.Dispose();art.Dispose();foreach(Font f in fonts.Values)f.Dispose();foreach(Brush b in brushes.Values)b.Dispose();}base.Dispose(disposing);}
         protected override void OnFormClosing(FormClosingEventArgs e){Store();base.OnFormClosing(e);}
         string FindAction(PointF p)
         {
@@ -375,21 +431,23 @@ namespace MountainTide
             if(panel==""&&InField){
                 string entry=entrances.At(p);
                 if(entry!="")return FarmerCovers(p)?"":entry;
-                int ground=-1;
-                for(int i=0;i<state.Plots.Length;i++){PointF b=Bed(i);if(Math.Abs(p.X-b.X)/HalfBedWidth+Math.Abs(p.Y-b.Y)/HalfBedHeight<=1){ground=i;break;}}
+                int ground=GroundAt(p);
                 if(drawer==""&&(tool=="seed"||tool=="shovel"))return ground>=0?"plot"+ground:"";
                 if(ground>=0&&drawer!="")return "plot"+ground;
                 // Match the frontmost painted leaf, then check the ground underneath it.
-                for(int i=state.Plots.Length-1;i>=0;i--){
-                    int id=state.Plots[i].CropId;if(id<0)continue;
+                bool behindFarmer=FarmerCovers(p);
+                for(int layer=PlantSites.Length-1;layer>=0;layer--){
+                    PlantSite site=PlantSites[layer];
+                    if(behindFarmer&&site.Root.Y<=player.Y)return "";
+                    int i=site.Plot,id=state.Plots[i].CropId;if(id<0)continue;
                     int stage=Stage(i);Bitmap img=art.Plants[id,stage];
-                    for(int k=2;k>=0;k--){RectangleF b=PlantBounds(i,stage,k);if(p.Y<b.Top||p.Y>=b.Bottom)continue;
-                        float localX=p.X-PlantBend(i,stage,k)*(b.Bottom-p.Y)/b.Height;
-                        if(localX<b.Left||localX>=b.Right)continue;
-                        int px=Math.Min(img.Width-1,(int)((localX-b.X)*img.Width/b.Width)),py=Math.Min(img.Height-1,(int)((p.Y-b.Y)*img.Height/b.Height));
-                        if(img.GetPixel(px,py).A>60)return "plot"+i;}
+                    RectangleF b=PlantBounds(site,stage);if(p.Y<b.Top||p.Y>=b.Bottom)continue;
+                    float localX=p.X-PlantBend(i,stage,site.Tuft)*(b.Bottom-p.Y)/b.Height;
+                    if(localX<b.Left||localX>=b.Right)continue;
+                    int px=Math.Min(img.Width-1,(int)((localX-b.X)*img.Width/b.Width)),py=Math.Min(img.Height-1,(int)((p.Y-b.Y)*img.Height/b.Height));
+                    if(img.GetPixel(px,py).A>60)return "plot"+i;
                 }
-                if(ground>=0)return "plot"+ground;
+                if(!behindFarmer&&ground>=0)return "plot"+ground;
             }
             return "";
         }
@@ -404,16 +462,26 @@ namespace MountainTide
             }
             if(Cursor!=desired)Cursor=desired;
         }
-        protected override void OnMouseMove(MouseEventArgs e){base.OnMouseMove(e);mouse=WorldPoint(e);UpdatePointer();}
+        protected override void OnMouseMove(MouseEventArgs e){
+            base.OnMouseMove(e);mouse=WorldPoint(e);
+            if(draggedVolume!=null){SetVolumeAt(mouse.X);Invalidate();return;}
+            UpdatePointer();
+        }
         protected override void OnMouseLeave(EventArgs e){base.OnMouseLeave(e);mouse=new PointF(-500,-500);hover="";Cursor=Cursors.Default;}
-        protected override void OnMouseCaptureChanged(EventArgs e){base.OnMouseCaptureChanged(e);if(!Capture)heldCrop="";}
+        protected override void OnMouseCaptureChanged(EventArgs e){
+            base.OnMouseCaptureChanged(e);
+            if(!Capture){heldCrop="";FinishVolumeDrag(false);}
+        }
         protected override void OnMouseUp(MouseEventArgs e){
-            base.OnMouseUp(e);if(e.Button!=MouseButtons.Left||heldCrop=="")return;
+            base.OnMouseUp(e);if(e.Button!=MouseButtons.Left)return;
+            if(draggedVolume!=null){SetVolumeAt(WorldPoint(e).X);FinishVolumeDrag(true);UpdatePointer();Refresh();return;}
+            if(heldCrop=="")return;
             string target=heldCrop;heldCrop="";Capture=false;mouse=WorldPoint(e);
             if(FindAction(mouse)==target&&Ripe(target))Action(target);UpdatePointer();Refresh();
         }
         protected override void OnMouseDown(MouseEventArgs e){
             base.OnMouseDown(e);if(T-travelAt<.9||doorAt>=0)return;
+            if(e.Button==MouseButtons.Right&&panel=="settings"){CloseSoundSettings();Refresh();return;}
             if(e.Button==MouseButtons.Right){StopWalking();CloseDrawer();panel="";tool="hand";Refresh();return;}
             if(e.Button!=MouseButtons.Left)return;mouse=WorldPoint(e);string a=FindAction(mouse);
             if(Ripe(a)){StopWalking();heldCrop=a;Capture=true;UpdatePointer();}
@@ -431,12 +499,14 @@ namespace MountainTide
         protected override void OnKeyDown(KeyEventArgs e){
             base.OnKeyDown(e);if(e.KeyCode==Keys.F11){ToggleFullScreen();return;}
             if(doorAt>=0)return;
+            if(e.KeyCode==Keys.Escape&&panel=="settings"){CloseSoundSettings();Refresh();return;}
             if(e.KeyCode==Keys.Escape){StopWalking();if(panel!="")panel="";else if(drawer!="")CloseDrawer();else if(fullscreen)ToggleFullScreen();else tool="hand";Refresh();return;}
             if(panel!=""||T-travelAt<.9)return;
             switch(e.KeyCode){
                 case Keys.D1:case Keys.NumPad1:if(InField)Action("hand");break;
                 case Keys.D2:case Keys.NumPad2:if(InField)Action("seeds");break;
                 case Keys.D3:case Keys.NumPad3:if(InField)Action("feedtool");break;
+                case Keys.W:if(InField)Action("use-water");break;
                 case Keys.B:case Keys.D4:Action("bag");break;
                 case Keys.T:case Keys.Space:Travel();break;
                 case Keys.F1:Action("help");break;

@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Xml.Serialization;
 
@@ -19,6 +20,7 @@ namespace MountainTide
         public bool Opened;
         public int CropId = -1;
         public long Planted;
+        public bool Watered;
     }
     public sealed class FarmState
     {
@@ -30,9 +32,17 @@ namespace MountainTide
         public int StarCredits;
         public int[] Seeds={3,2,1}, Stock={0,0,0};
         public bool[] MachinesOwned=new bool[3];
-        public const int LandLimit=5, CellCount=44;
+        public const int FreePlotCount=5, Columns=9, Rows=4, CellCount=Columns*Rows;
         public Plot[] Plots;
-        public int OpenCount {get{return Array.FindAll(Plots,p=>p.Opened).Length;}}
+        public int OpenCount {
+            get {
+                int count=0;
+                foreach(Plot plot in Plots)if(plot.Opened)count++;
+                return count;
+            }
+        }
+        static int PlotPrice(int number){return Math.Max(0,number-FreePlotCount)*500;}
+        public int NextPlotCost {get{return PlotPrice(OpenCount+1);}}
         public long Beginning, TimeBonus;
         public bool HasHarvested, HasTraveled;
         public static long UtcSeconds { get { return DateTime.UtcNow.Ticks / TimeSpan.TicksPerSecond; } }
@@ -46,20 +56,69 @@ namespace MountainTide
         }
         static Plot[] Grassland(){Plot[] cells=new Plot[CellCount];for(int i=0;i<cells.Length;i++)cells[i]=new Plot();return cells;}
         public bool Till(int i){
-            if(i<0||i>=Plots.Length||Plots[i].Opened||OpenCount>=LandLimit)return false;
-            Plots[i].Opened=true;return true;
+            if(i<0||i>=Plots.Length||Plots[i].Opened)return false;
+            int cost=NextPlotCost;
+            if(Cash<cost)return false;
+            Cash-=cost;
+            Plots[i].Opened=true;
+            return true;
         }
         public bool Uproot(int i){
             if(!Plots[i].Opened||Plots[i].CropId<0)return false;
-            Plots[i].CropId=-1;Plots[i].Planted=0;return true;
+            Plots[i].CropId=-1;Plots[i].Planted=0;Plots[i].Watered=false;return true;
         }
         public void ImportOldPlots(long now){
             // Transfer the old fixed beds before giving this farm a free choice of five sites.
-            for(int i=0;i<Plots.Length;i++){int id=Plots[i].CropId;if(id<0)continue;
-                if(Left(i,now)==0)Stock[id]+=Crop.All[id].Yield+(MachinesOwned[1]?2:0);
-                else Seeds[id]++;
-            }
+            for(int i=0;i<Plots.Length;i++)ReturnCrop(i,now);
             Plots=Grassland();
+        }
+        void ReturnCrop(int i,long now){
+            int id=Plots[i].CropId;
+            if(id<0)return;
+            if(Left(i,now)==0)Stock[id]+=Crop.All[id].Yield+(MachinesOwned[1]?2:0);
+            else Seeds[id]++;
+        }
+        internal static bool IsWideField(int count){return count==40||count==44;}
+        static int OldPlotIndex(int oldColumns,int row,int column){
+            // 44-cell farms stored six even columns, then five odd ones. 40-cell farms were row-major.
+            int slot=oldColumns==11?column/2+(column%2==0?0:6):column;
+            return row*oldColumns+slot;
+        }
+        internal void ImportWideField(long now){
+            int oldColumns=Plots.Length/Rows;
+            Plot[] field=Grassland();
+            for(int row=0;row<Rows;row++)
+                for(int col=0;col<Columns;col++)
+                    field[row*Columns+col]=Plots[OldPlotIndex(oldColumns,row,col)];
+
+            // Give every row first choice of its own free cells before allocating across rows.
+            List<int> needsSpace=new List<int>();
+            for(int row=0;row<Rows;row++){
+                int start=row*Columns;
+                int dest=start+Columns-1;
+                for(int col=Columns;col<oldColumns;col++){
+                    Plot plot=Plots[OldPlotIndex(oldColumns,row,col)];
+                    if(!plot.Opened)continue;
+                    while(dest>=start&&field[dest].Opened)dest--;
+                    if(dest>=start)field[dest--]=plot;
+                    else needsSpace.Add(row*oldColumns+col);
+                }
+            }
+            foreach(int oldCell in needsSpace){
+                int row=oldCell/oldColumns,col=oldCell%oldColumns;
+                int dest=-1,bestDistance=int.MaxValue;
+                for(int i=0;i<field.Length;i++){
+                    if(field[i].Opened)continue;
+                    int dx=col-i%Columns,dy=row-i/Columns;
+                    int distance=dx*dx+dy*dy;
+                    if(distance<bestDistance){bestDistance=distance;dest=i;}
+                }
+                int source=OldPlotIndex(oldColumns,row,col);
+                if(dest>=0)field[dest]=Plots[source];
+                else ReturnCrop(source,now);
+            }
+            for(int number=OpenCount;number>CellCount;number--)Cash+=PlotPrice(number);
+            Plots=field;
         }
         public long Left(int i,long now)
         {
@@ -68,7 +127,16 @@ namespace MountainTide
         public bool Sow(int i,int id,long now)
         {
             if(!Plots[i].Opened || Plots[i].CropId>=0 || Seeds[id]<1)return false;
-            Seeds[id]--;Plots[i].CropId=id;Plots[i].Planted=now;return true;
+            Seeds[id]--;Plots[i].CropId=id;Plots[i].Planted=now;Plots[i].Watered=false;return true;
+        }
+        public const int WaterBonusSeconds=5;
+        public bool Water(int i,long now)
+        {
+            Plot p=Plots[i];
+            if(p.CropId<0 || p.Watered || Left(i,now)==0)return false;
+            p.Watered=true;
+            p.Planted-=WaterBonusSeconds;
+            return true;
         }
         public bool Feed(int i,long now)
         {
@@ -79,7 +147,7 @@ namespace MountainTide
         {
             int id=Plots[i].CropId;if(id<0 || Left(i,now)>0)return 0;
             int qty=Crop.All[id].Yield+(MachinesOwned[1]?2:0);Stock[id]+=qty;
-            Plots[i].CropId=-1;HasHarvested=true;
+            Plots[i].CropId=-1;Plots[i].Watered=false;HasHarvested=true;
             if(MachinesOwned[0])Sow(i,id,now);return qty;
         }
         public int Automate(long now)
@@ -127,6 +195,8 @@ namespace MountainTide
         private readonly string file;
         private readonly XmlSerializer serializer=new XmlSerializer(typeof(FarmState));
         readonly string legacy;
+        bool loadedBackup;
+        public string DirectoryPath {get{return Path.GetDirectoryName(file);}}
         public SaveFile(string path,string legacyPath=null){file=path;legacy=legacyPath;}
         public FarmState Load()
         {
@@ -136,13 +206,20 @@ namespace MountainTide
                 try{using(FileStream f=File.OpenRead(path)){
                     FarmState s=(FarmState)serializer.Deserialize(f);
                     bool old=path==legacy||legacy!=null&&path==legacy+".bak";
-                    if(s.Plots==null||s.Plots.Length!=(old?9:FarmState.CellCount)||s.Seeds==null||s.Seeds.Length!=3||s.Stock==null||s.Stock.Length!=3||s.MachinesOwned==null||s.MachinesOwned.Length!=3||s.Beginning<=0)continue;
+                    if(s.Plots==null||s.Seeds==null||s.Seeds.Length!=3||s.Stock==null||s.Stock.Length!=3||s.MachinesOwned==null||s.MachinesOwned.Length!=3||s.Beginning<=0)continue;
+                    int length=s.Plots.Length;
+                    if(old?length!=9:length!=FarmState.CellCount&&!FarmState.IsWideField(length))continue;
                     if(Array.Exists(s.Plots,p=>p==null||p.CropId< -1||p.CropId>2))continue;
                     if(old)s.ImportOldPlots(s.Now);
-                    else if(s.OpenCount>FarmState.LandLimit||Array.Exists(s.Plots,p=>!p.Opened&&p.CropId>=0))continue;
+                    else {
+                        if(Array.Exists(s.Plots,p=>!p.Opened&&p.CropId>=0))continue;
+                        if(FarmState.IsWideField(length))s.ImportWideField(s.Now);
+                    }
+                    loadedBackup=path==file+".bak";
                     return s;
                 }}catch(InvalidOperationException){}catch(IOException){}
             }
+            loadedBackup=false;
             return FarmState.New(FarmState.UtcSeconds);
         }
         public void Write(FarmState state)
@@ -150,7 +227,9 @@ namespace MountainTide
             Directory.CreateDirectory(Path.GetDirectoryName(file));
             string tmp=file+".tmp";
             using(FileStream f=File.Create(tmp)){serializer.Serialize(f,state);f.Flush(true);}
-            if(File.Exists(file))File.Replace(tmp,file,file+".bak");else File.Move(tmp,file);
+            // A bad primary must not displace the good backup that supplied this session.
+            if(File.Exists(file))File.Replace(tmp,file,loadedBackup?null:file+".bak");else File.Move(tmp,file);
+            loadedBackup=false;
         }
     }
 }

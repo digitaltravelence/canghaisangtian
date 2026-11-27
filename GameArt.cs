@@ -10,7 +10,7 @@ namespace MountainTide
 {
     internal sealed class GameArt : IDisposable
     {
-        public readonly Bitmap Soil;
+        public readonly Bitmap Soil, Spade, WateringCan;
         public readonly Bitmap[,] Plants=new Bitmap[3,3],FarmerFrames=new Bitmap[2,3];
         public readonly Bitmap[] Tools=new Bitmap[8];
         public readonly Bitmap[] SeedPackets=new Bitmap[3];
@@ -23,6 +23,14 @@ namespace MountainTide
             for(int i=0;i<SeedPackets.Length;i++)SeedPackets[i]=MakePacket(i);
             for(int i=0;i<farmer.Length;i++)FarmerFrames[i/3,i%3]=farmer[i];
             Tools=ReadSheet("items.png",new[]{0,442,887},new[]{new[]{0,430,866,1308,1774},new[]{0,414,848,1256,1774}},100);
+            Spade=ReadIcon("spade.png");
+            WateringCan=ReadIcon("watering-can.png");
+        }
+        static Bitmap ReadIcon(string name)
+        {
+            using(Stream stream=Assembly.GetExecutingAssembly().GetManifestResourceStream(name))
+            using(Bitmap image=new Bitmap(stream))
+                return image.Clone(new Rectangle(0,0,image.Width,image.Height),PixelFormat.Format32bppPArgb);
         }
         static Bitmap[] ReadSheet(string name,int[] rows,int[][] columns,int maxSide)
         {
@@ -68,6 +76,6 @@ namespace MountainTide
             }
             return packet;
         }
-        public void Dispose(){Soil.Dispose();foreach(Bitmap b in SeedPackets)b.Dispose();foreach(Bitmap b in Tools)b.Dispose();foreach(Bitmap b in Plants)b.Dispose();foreach(Bitmap b in FarmerFrames)b.Dispose();}
+        public void Dispose(){Soil.Dispose();Spade.Dispose();WateringCan.Dispose();foreach(Bitmap b in SeedPackets)b.Dispose();foreach(Bitmap b in Tools)b.Dispose();foreach(Bitmap b in Plants)b.Dispose();foreach(Bitmap b in FarmerFrames)b.Dispose();}
     }
 }

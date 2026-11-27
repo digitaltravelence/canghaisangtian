@@ -14,11 +14,11 @@ namespace MountainTide
             Sprite(g,Sea?art.Tools[6]:art.Plants[0,2],30,25,43,52);
             TextAt(g,Sea?"海上避难所":InField?"云岫农场":"山景农舍",24,cream,83,23,170,34,true);
             TextAt(g,(Sea?"2126 · 百年后":"2026 · 现代")+"    第 "+state.Day+" 天",13,Col("d4d4ad"),84,56,176,22);
-            Plate(g,934,20,127,41,Dark,Rim,14);Sprite(g,art.Tools[5],945,27,27,27);
-            TextAt(g,"现钱 "+state.Cash,16,cream,979,20,84,41,true);
-            Plate(g,1069,20,127,41,Dark,Rim,14);Sprite(g,art.Tools[6],1080,27,27,27);
-            TextAt(g,"星元 "+state.StarCredits,16,cream,1112,20,84,41,true);
-            Plate(g,1208,20,43,41,Dark,Rim,16);TextAt(g,"?",22,gold,1208,18,43,41,true,true);HitBox(1208,20,43,41,"help");
+            Plate(g,829,20,127,41,Dark,Rim,14);Sprite(g,art.Tools[5],840,27,27,27);
+            TextAt(g,"现钱 "+state.Cash,16,cream,874,20,84,41,true);
+            Plate(g,964,20,127,41,Dark,Rim,14);Sprite(g,art.Tools[6],975,27,27,27);
+            TextAt(g,"星元 "+state.StarCredits,16,cream,1007,20,84,41,true);
+            Plate(g,1099,20,43,41,Dark,Rim,16);TextAt(g,"?",22,gold,1099,18,43,41,true,true);HitBox(1099,20,43,41,"help");
             if(saveFailed){Plate(g,21,94,233,31,Col("814d3b"),Rim);TextAt(g,"存档写入失败，请检查磁盘",14,cream,26,94,222,31,false,true);}
             if(panel=="")DrawFarmControls(g);
         }
@@ -37,6 +37,7 @@ namespace MountainTide
         void DrawPanel(Graphics g)
         {
             g.FillRectangle(B(Color.FromArgb(104,20,29,23)),0,0,W,H);
+            if(panel=="settings"){DrawSoundSettings(g);return;}
             const int x=351,y=140,w=578,h=427;
             Plate(g,x+4,y+6,w,h,Color.FromArgb(135,33,38,28),Color.FromArgb(130,33,38,28),13);
             Plate(g,x,y,w,h,Col("faf2da"),Col("8b7851"),12);
@@ -83,13 +84,19 @@ namespace MountainTide
                 TextAt(g,"作物平时也会生长，关掉游戏后照常计时。",15,Col("64715d"),390,414,500,42,false,true);
                 ModalButton(g,715,494,181,"休息到明天","sleep");
             }else{
-                string[] lines={"点铲子，再点草地开垦。开局可自选五块田。","打开种袋，选种子，再逐格点击空田播种。右键放下。","到山村粮站卖收成，到青芽种子铺买种子和化肥。","拨动怀表去百年后的避难所，码头收粮，工坊卖设备。","B 背包，T 穿越，Esc 收起，F11 全屏。进度自动保存。"};
+                string[] lines={"用铲子开田，前五块免费。第六块 500 现钱，此后每块多 500。","打开种袋，选种子，再逐格点击空田播种。右键放下。","水壶（W）每茬可浇一次，提前 "+FarmState.WaterBonusSeconds+" 秒成熟。","到山村粮站卖收成，到青芽种子铺买种子和化肥。","拨动怀表去百年后的避难所，码头收粮，工坊卖设备。","B 背包，T 穿越，Esc 收起，F11 全屏。进度自动保存。"};
                 for(int i=0;i<lines.Length;i++)TextAt(g,lines[i],15,ink,387,252+i*40,512,38);
                 ModalButton(g,740,494,157,"回到游戏","close");
             }
         }
         internal void Action(string a)
         {
+            if(a=="settings"){
+                if(panel=="settings")CloseSoundSettings();
+                else {settingsReturnPanel=panel;StopWalking();panel="settings";}
+                return;
+            }
+            if(panel=="settings"){SoundSettingsAction(a);return;}
             if(a=="close"){panel="";CloseDrawer();return;}
             if(a=="watch"){Travel();return;}
             if((a=="leaveHouse"||a=="bed")&&scene==Scene.House){
@@ -127,10 +134,23 @@ namespace MountainTide
             Plot p=state.Plots[i];PointF b=Bed(i);flip=b.X<player.X;facingAway=false;
             string work=tool;tool="hand";pickTime=T;
             if(work=="hand"&&p.CropId>=0&&state.Left(i,state.Now)==0){
-                string name=Crop.All[p.CropId].Name;int n=state.Harvest(i,state.Now);Store();Float("+"+n+" "+name,b);Tell("收成已装进背包。");return;
+                int crop=p.CropId;
+                int n=state.Harvest(i,state.Now);
+                if(n>0){
+                    Store();audio.Play(crop==0?FarmSound.Reap:FarmSound.Pick);
+                    Float("+"+n+" "+Crop.All[crop].Name,b);Tell("收成已装进背包。");
+                }
+                return;
+            }
+            if(work=="water"){
+                tool="water";
+                if(state.Water(i,state.Now)){
+                    Store();audio.Play(FarmSound.Water);Float("已浇水",b);
+                }else Tell("这株作物现在无需浇水。");
+                return;
             }
             if(work=="feed"&&state.Feed(i,state.Now)){
-                Store();Float("生长加快",b);return;
+                Store();audio.Play(FarmSound.Fertilize);Float("生长加快",b);return;
             }
             SelectCell(i);
         }
